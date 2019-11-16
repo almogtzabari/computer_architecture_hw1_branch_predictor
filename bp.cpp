@@ -1,7 +1,36 @@
 /* 046267 Computer Architecture - Winter 2019/20 - HW #1 */
 /* This file should hold your implementation of the predictor simulator */
 
+#include <vector>
+#include <assert.h>
 #include "bp_api.h"
+#include "stdlib.h"
+#include "math.h"
+
+namespace helpers{
+    int log(int num){
+        int ret_val = 0;
+        while(num>1){
+            ret_val++;
+            num /= 2;
+        }
+        return ret_val;
+    }
+
+    uint32_t extarctLastNBits(uint32_t num, uint32_t n){
+        assert(n<6 && n>0);  // BTB size can only be 1,2,4,8,16,32.
+        switch(n){
+            case 1: return num & 0x1;
+            case 2: return num & 0x3;
+            case 3: return num & 0x7;
+            case 4: return num & 0xf;
+            case 5: return num & 0x1f;
+            default: return 0;
+        }
+    }
+}
+
+class BimodialStateMachine;
 
 typedef enum bimodial_state {
     STRONGLY_NOT_TAKEN = 0,
@@ -14,7 +43,7 @@ typedef std::vector<BimodialStateMachine> StateMachineTable;
 typedef StateMachineTable* StateMachineTablePtr;
 typedef SIM_stats Statistics;
 
-struct Register {
+typedef struct reg_t{
     std::vector<bool> data;
 
     /**
@@ -22,8 +51,10 @@ struct Register {
      * Register will initialized with value 0.
      * @param size - number of bits to initialize the register with.
      */
-    Register(uint32_t size, int value = 0) : data(std::vector<bool>(size)) {
-        // Logic to convert int to bits.
+    reg_t(uint32_t size=8) : data(std::vector<bool>(size)) {
+        for(int i=0; i<size; i++){
+            data[i] = 0;
+        }
     }
 
     void shiftLeft() {
@@ -51,17 +82,26 @@ struct Register {
     int getSize() {
         return data.size();
     }
-};
+
+    int getValue(){
+        int value = 1;
+        for (int i=0; i<data.size(); i++){
+            value += data[i] * 2^i;
+        }
+        return value;
+    }
+} Register;
 
 class BimodialStateMachine {
 private:
     BimodialState state;
 
+public:
     /**
      * Constructor
      * @param default_state - Default state to initialize the machine with.
      */
-    BimodialStateMachine(const BimodialState &default_state) : state(default_state) {}
+    BimodialStateMachine(BimodialState default_state) : state(default_state) {}
 
     /**
      * Increasing the state of the machine.
@@ -95,11 +135,10 @@ private:
         }
     }
 
-public:
     /**
      * Returns the state of the machine.
      */
-    void getState() {
+    BimodialState getState() {
         return state;
     }
 };
@@ -109,22 +148,22 @@ class BimodialBranchPredictor {
     class BBMRecord {
     private:
         bool valid;
-        Register tag;
-        Register target;
-        Register *history;
-        StateMachineTablePtr machines_table_ptr;
+        uint32_t tag;
+        uint32_t target;
+        uint32_t* history;
+        StateMachineTablePtr machine_table_ptr;
 
     public:
         BBMRecord() : valid(false) {}
 
-        BBMRecord(Register tag, Register target, Register *history, StateMachineVectorPtr ptr) : valid(true), tag(tag),
-                                                                                                 target(target),
-                                                                                                 history(history),
-                                                                                                 machines_table_ptr(
+        BBMRecord(Register tag, Register target, Register *history, StateMachineTablePtr ptr) : valid(true), tag(tag),
+                                                                                                target(target),
+                                                                                                history(history),
+                                                                                                machine_table_ptr(
                                                                                                          ptr) {}
 
         bool compareTag(int tag) {
-            return this->valid && tag == this->tag;
+            return this->valid && tag == this->tag.getValue();
         }
 
         void setTarget(int target) {
@@ -134,46 +173,119 @@ class BimodialBranchPredictor {
 
         void updateHistory(bool correct_prediction) {}
 
+        bool isValid(){
+            return this->valid;
+        }
+
+        StateMachineTablePtr getStateMachineTable(){
+            return machine_table_ptr;
+        }
+
+        uint32_t* getHistory(){
+            return this->history;
+        }
+
     };
 
 private:
     Statistics stats;
     std::vector <BBMRecord> records;
-    Register *ghr_ptr;
+    Register* ghr_ptr;
     StateMachineTablePtr global_fsm_table_ptr;
     unsigned tag_size;
     unsigned fsm_default_state;
+    int shared;
 
+    /**
+     * @param pc - branch's pc.
+     * @return True if branch with given pc exists in the predictor.
+     */
+    bool branchExists(uint32_t pc){
+        uint32_t index = getIndexByPC(pc);
+        uint32_t tag = helpers::extarctLastNBits(pc>>2, this->tag_size);
+
+        // Check edge case when BTB size is 1
+        if (records.size() == 1){
+            return records[0].isValid() && records[0].compareTag(tag);
+        }
+
+        return records[index].isValid() && records[index].compareTag(tag);
+    }
+
+    uint32_t getIndexByPC(uint32_t pc){
+        // Calculate how many bits need to be extracted from pc
+        uint32_t btb_bits_size = helpers::log(records.size());
+
+        // Extract bits from pc
+        uint32_t shifted_pc = pc >> 2;  // getting rid of 2 `00` of pc.
+
+        // Calculates index to btb and extracts tag from record.
+        return helpers::extarctLastNBits(shifted_pc, btb_bits_size);
+
+    }
+
+public:
     BimodialBranchPredictor(unsigned btbSize, unsigned historySize, unsigned tagSize, unsigned fsmState,
                             bool isGlobalHist, bool isGlobalTable, int Shared) : stats(Statistics{0, 0, 0}),
                                                                                  records(std::vector<BBMRecord>(
                                                                                          btbSize)),
                                                                                  ghr_ptr(nullptr), global_fsm_table_ptr(nullptr),
                                                                                  tag_size(tagSize),
-                                                                                 fsm_default_state(fsmState) {
+                                                                                 fsm_default_state(fsmState), shared(-1) {
         if (isGlobalHist) {
             this->ghr_ptr = new Register(historySize);
         }
         if(isGlobalTable){
-            this->global_fsm_table_ptr = new StateMachineTable()
+            this->global_fsm_table_ptr = new StateMachineTable(pow(2,historySize), BimodialStateMachine(BimodialState(fsmState)));
+            shared = Shared;
         }
     }
 
     ~BimodialBranchPredictor() {
-        if (global_history_register_ptr) {
-            delete this->global_history_register_ptr;
+        if(ghr_ptr) {
+            delete this->ghr_ptr;
+        }
+        if(global_fsm_table_ptr){
+            delete this->global_fsm_table_ptr;
         }
     }
 
+    bool predict(uint32_t pc, uint32_t *dst){
+        if(!branchExists(pc)){
+            *dst = pc + 4;
+            return false;
+        }
+
+        uint32_t index = getIndexByPC(pc);
+        BBMRecord& record = records[index];
+        uint32_t machine_index = *(record.getHistory()) XOR getMask()
+
+
+
+        record.getStateMachineTable()[record]
+    }
+
+
+
+
 };
 
+BimodialBranchPredictor* predictor;
 
 int BP_init(unsigned btbSize, unsigned historySize, unsigned tagSize, unsigned fsmState,
             bool isGlobalHist, bool isGlobalTable, int Shared) {
-    return -1;
+    try{
+        predictor = new BimodialBranchPredictor(btbSize, historySize, tagSize, fsmState, isGlobalHist, isGlobalTable, Shared);
+    }
+    catch (...){
+        return -1;
+    }
+
+    return 0;
 }
 
 bool BP_predict(uint32_t pc, uint32_t *dst) {
+    bool temp = predictor->branchExists(pc);
     return false;
 }
 
