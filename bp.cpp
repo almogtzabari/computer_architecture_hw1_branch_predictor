@@ -18,13 +18,16 @@ namespace helpers{
     }
 
     uint32_t extarctLastNBits(uint32_t num, uint32_t n){
-        assert(n<6 && n>0);  // BTB size can only be 1,2,4,8,16,32.
+        assert(n<9 && n>0);  // BTB size can only be 1,2,4,8,16,32.
         switch(n){
             case 1: return num & 0x1;
             case 2: return num & 0x3;
             case 3: return num & 0x7;
             case 4: return num & 0xf;
             case 5: return num & 0x1f;
+            case 6: return num & 0x3f;
+            case 7: return num & 0x7f;
+            case 8: return num & 0xff;
             default: return 0;
         }
     }
@@ -185,6 +188,10 @@ class BimodialBranchPredictor {
             return this->history;
         }
 
+        uint32_t getTarget(){
+            return this->target;
+        }
+
     };
 
 private:
@@ -195,6 +202,7 @@ private:
     unsigned tag_size;
     unsigned fsm_default_state;
     int shared;
+    unsigned history_size;
 
     /**
      * @param pc - branch's pc.
@@ -210,6 +218,20 @@ private:
         }
 
         return records[index].isValid() && records[index].compareTag(tag);
+    }
+
+    uint32_t getMask(uint32_t pc){
+        if (!this->global_fsm_table_ptr){
+            return 0;
+        }
+        switch (this->shared){
+            case 0: return helpers::extarctLastNBits(pc>>2,history_size); // Using G-share with lsb.
+            case 1: return helpers::extarctLastNBits(pc>>2,history_size); // Using L-share with lsb.
+            case 2: return helpers::extarctLastNBits(pc>>15,history_size); // Using G-share with mid.
+            case 3: return helpers::extarctLastNBits(pc>>15,history_size); // Using L-share with mid.
+            case 4: return 0; // Shared Table without G\L - share.
+            default: return 4;
+        }
     }
 
     uint32_t getIndexByPC(uint32_t pc){
@@ -231,7 +253,7 @@ public:
                                                                                          btbSize)),
                                                                                  ghr_ptr(nullptr), global_fsm_table_ptr(nullptr),
                                                                                  tag_size(tagSize),
-                                                                                 fsm_default_state(fsmState), shared(-1) {
+                                                                                 fsm_default_state(fsmState), shared(-1),history_size(historySize){
         if (isGlobalHist) {
             this->ghr_ptr = new Register(historySize);
         }
@@ -251,18 +273,22 @@ public:
     }
 
     bool predict(uint32_t pc, uint32_t *dst){
+        *dst = pc + 4;
+
         if(!branchExists(pc)){
-            *dst = pc + 4;
             return false;
         }
 
         uint32_t index = getIndexByPC(pc);
         BBMRecord& record = records[index];
-        uint32_t machine_index = *(record.getHistory()) XOR getMask()
-
-
-
-        record.getStateMachineTable()[record]
+        uint32_t machine_index = *(record.getHistory()) ^ getMask(pc);
+        StateMachineTablePtr temp = (record.getStateMachineTable());
+        StateMachineTable temp2 = *temp;
+        bool prediction = (temp2[machine_index].getState() > 1);
+        if(prediction){
+            *dst = record.getTarget();
+        }
+        return prediction;
     }
 
 
