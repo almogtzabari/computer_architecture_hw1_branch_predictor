@@ -6,30 +6,23 @@
 #include "bp_api.h"
 #include "stdlib.h"
 #include "math.h"
-
-namespace helpers{
-    int log(int num){
+#define TARGET_SIZE 30
+namespace helpers {
+    int log(int num) {
         int ret_val = 0;
-        while(num>1){
+        while (num > 1) {
             ret_val++;
             num /= 2;
         }
         return ret_val;
     }
 
-    uint32_t extarctLastNBits(uint32_t num, uint32_t n){
-        assert(n<9 && n>0);  // BTB size can only be 1,2,4,8,16,32.
-        switch(n){
-            case 1: return num & 0x1;
-            case 2: return num & 0x3;
-            case 3: return num & 0x7;
-            case 4: return num & 0xf;
-            case 5: return num & 0x1f;
-            case 6: return num & 0x3f;
-            case 7: return num & 0x7f;
-            case 8: return num & 0xff;
-            default: return 0;
+    uint32_t extarctLastNBits(uint32_t num, uint32_t n) {
+        int mask = 0;
+        for (int i = 0; i < n; i++) {
+            mask +=(int)pow(2, i);
         }
+        return num & mask;
     }
 }
 
@@ -45,55 +38,6 @@ typedef enum bimodial_state {
 typedef std::vector<BimodialStateMachine> StateMachineTable;
 typedef StateMachineTable* StateMachineTablePtr;
 typedef SIM_stats Statistics;
-
-typedef struct reg_t{
-    std::vector<bool> data;
-
-    /**
-     * Default constructor.
-     * Register will initialized with value 0.
-     * @param size - number of bits to initialize the register with.
-     */
-    reg_t(uint32_t size=8) : data(std::vector<bool>(size)) {
-        for(int i=0; i<size; i++){
-            data[i] = 0;
-        }
-    }
-
-    void shiftLeft() {
-        for (int i = data.size() - 1; i > 0; i--) {
-            data[i] = data[i - 1];
-        }
-        data[0] = 0;
-    }
-
-    void shiftRight() {
-        for (int i = 0; i < data.size() - 1; i++) {
-            data[i] = data[i + 1];
-        }
-        data[data.size() - 1] = 0;
-    }
-
-    bool operator[](int index) {
-        return data.at(index);
-    }
-
-    const bool operator[](int index) const {
-        return data.at(index);
-    }
-
-    int getSize() {
-        return data.size();
-    }
-
-    int getValue(){
-        int value = 1;
-        for (int i=0; i<data.size(); i++){
-            value += data[i] * 2^i;
-        }
-        return value;
-    }
-} Register;
 
 class BimodialStateMachine {
 private:
@@ -113,12 +57,16 @@ public:
         switch (state) {
             case STRONGLY_NOT_TAKEN:
                 state = WEAKLY_NOT_TAKEN;
+                break;
             case WEAKLY_NOT_TAKEN:
                 state = WEAKLY_TAKEN;
+                break;
             case WEAKLY_TAKEN:
                 state = STRONGLY_TAKEN;
+                break;
             case STRONGLY_TAKEN:
                 state = STRONGLY_TAKEN;
+                break;
         }
     }
 
@@ -129,12 +77,16 @@ public:
         switch (state) {
             case STRONGLY_NOT_TAKEN:
                 state = STRONGLY_NOT_TAKEN;
+                break;
             case WEAKLY_NOT_TAKEN:
                 state = STRONGLY_NOT_TAKEN;
+                break;
             case WEAKLY_TAKEN:
                 state = WEAKLY_NOT_TAKEN;
+                break;
             case STRONGLY_TAKEN:
                 state = WEAKLY_TAKEN;
+                break;
         }
     }
 
@@ -156,40 +108,54 @@ class BimodialBranchPredictor {
         uint32_t* history;
         StateMachineTablePtr machine_table_ptr;
 
+
     public:
         BBMRecord() : valid(false) {}
 
-        BBMRecord(Register tag, Register target, Register *history, StateMachineTablePtr ptr) : valid(true), tag(tag),
-                                                                                                target(target),
-                                                                                                history(history),
-                                                                                                machine_table_ptr(
-                                                                                                         ptr) {}
-
         bool compareTag(int tag) {
-            return this->valid && tag == this->tag.getValue();
+            return this->valid && tag == this->tag;
         }
 
         void setTarget(int target) {
-            assert(this->valid);
             this->target = target;
         }
 
-        void updateHistory(bool correct_prediction) {}
+        void updateHistory (bool correct_prediction, uint32_t n_bits) {
+            *history = *history<<1;
+            *history+=correct_prediction;
+            *history=helpers::extarctLastNBits(*history, n_bits);
+        }
 
         bool isValid(){
             return this->valid;
         }
 
-        StateMachineTablePtr getStateMachineTable(){
+        void setValid(){
+            this->valid=true;
+        }
+
+        StateMachineTablePtr getStateMachineTablePtr(){
             return machine_table_ptr;
         }
 
-        uint32_t* getHistory(){
+        void setStateMachineTablePtr(StateMachineTablePtr table){
+            this->machine_table_ptr=table;
+        }
+
+        uint32_t* getHistoryPtr(){
             return this->history;
+        }
+
+        void setHistoryPtr(uint32_t* ptr){
+            this->history=ptr;
         }
 
         uint32_t getTarget(){
             return this->target;
+        }
+
+        void setTag(uint32_t tag){
+            this->tag=tag;
         }
 
     };
@@ -197,7 +163,7 @@ class BimodialBranchPredictor {
 private:
     Statistics stats;
     std::vector <BBMRecord> records;
-    Register* ghr_ptr;
+    uint32_t* ghr_ptr;
     StateMachineTablePtr global_fsm_table_ptr;
     unsigned tag_size;
     unsigned fsm_default_state;
@@ -225,12 +191,9 @@ private:
             return 0;
         }
         switch (this->shared){
-            case 0: return helpers::extarctLastNBits(pc>>2,history_size); // Using G-share with lsb.
-            case 1: return helpers::extarctLastNBits(pc>>2,history_size); // Using L-share with lsb.
-            case 2: return helpers::extarctLastNBits(pc>>15,history_size); // Using G-share with mid.
-            case 3: return helpers::extarctLastNBits(pc>>15,history_size); // Using L-share with mid.
-            case 4: return 0; // Shared Table without G\L - share.
-            default: return 4;
+            case 1: return helpers::extarctLastNBits(pc>>2,history_size); // Using share with lsb.
+            case 2: return helpers::extarctLastNBits(pc>>15,history_size); // Using share with mid.
+            default: return 0;
         }
     }
 
@@ -246,6 +209,31 @@ private:
 
     }
 
+    void computeMemorySize(){
+        unsigned btb_size=records.size();
+        if(!global_fsm_table_ptr){
+            if(!ghr_ptr){
+                // Local history, local fsm table.
+                stats.size = btb_size* (unsigned)(tag_size+ TARGET_SIZE +(unsigned)2*pow(2,history_size) + history_size );
+            }
+            else {
+                // Global history, local fsm table.
+                stats.size = btb_size* (unsigned)(tag_size+ TARGET_SIZE +(unsigned)2*pow(2,history_size))+history_size;
+            }
+        }
+        else{
+            if(!ghr_ptr){
+                // Local history, global fsm table.
+                stats.size = btb_size* (unsigned)(tag_size+ TARGET_SIZE + history_size )+(unsigned)2*pow(2,history_size);
+            }
+            else {
+                // Global history, global fsm table.
+                stats.size = btb_size* (unsigned)(tag_size+ TARGET_SIZE)+(unsigned)2*pow(2,history_size)+ history_size;
+            }
+
+        }
+    }
+
 public:
     BimodialBranchPredictor(unsigned btbSize, unsigned historySize, unsigned tagSize, unsigned fsmState,
                             bool isGlobalHist, bool isGlobalTable, int Shared) : stats(Statistics{0, 0, 0}),
@@ -253,17 +241,28 @@ public:
                                                                                          btbSize)),
                                                                                  ghr_ptr(nullptr), global_fsm_table_ptr(nullptr),
                                                                                  tag_size(tagSize),
-                                                                                 fsm_default_state(fsmState), shared(-1),history_size(historySize){
+                                                                                 fsm_default_state(fsmState), shared(Shared),history_size(historySize){
         if (isGlobalHist) {
-            this->ghr_ptr = new Register(historySize);
+            this->ghr_ptr = new uint32_t(0);
         }
         if(isGlobalTable){
-            this->global_fsm_table_ptr = new StateMachineTable(pow(2,historySize), BimodialStateMachine(BimodialState(fsmState)));
+            this->global_fsm_table_ptr = new StateMachineTable(pow(2,historySize), BimodialStateMachine(BimodialState((fsmState))));
             shared = Shared;
         }
+        this->computeMemorySize();
     }
 
     ~BimodialBranchPredictor() {
+        for(BBMRecord& record: this->records){
+            if(record.isValid()){
+                if(!ghr_ptr) {
+                    delete record.getHistoryPtr();
+                }
+                if(!global_fsm_table_ptr){
+                    delete record.getStateMachineTablePtr();
+                }
+            }
+        }
         if(ghr_ptr) {
             delete this->ghr_ptr;
         }
@@ -274,15 +273,14 @@ public:
 
     bool predict(uint32_t pc, uint32_t *dst){
         *dst = pc + 4;
-
         if(!branchExists(pc)){
             return false;
         }
 
         uint32_t index = getIndexByPC(pc);
         BBMRecord& record = records[index];
-        uint32_t machine_index = *(record.getHistory()) ^ getMask(pc);
-        StateMachineTablePtr temp = (record.getStateMachineTable());
+        uint32_t machine_index = *(record.getHistoryPtr()) ^ getMask(pc);
+        StateMachineTablePtr temp = (record.getStateMachineTablePtr());
         StateMachineTable temp2 = *temp;
         bool prediction = (temp2[machine_index].getState() > 1);
         if(prediction){
@@ -291,8 +289,70 @@ public:
         return prediction;
     }
 
+    void update(uint32_t pc, uint32_t targetPc, bool taken, uint32_t pred_dst){
+        this->stats.br_num++;
+        uint32_t index = getIndexByPC(pc);
+        BBMRecord& record = records[index];
+        record.setTarget(targetPc);
+        if(branchExists(pc)){
+            StateMachineTablePtr temp = (record.getStateMachineTablePtr());
+            uint32_t machine_index = *(record.getHistoryPtr()) ^ getMask(pc);
+            stats.flush_num += ((taken != (*temp)[machine_index].getState() > 1) || (taken && (targetPc != pred_dst)));
+            if(taken){
+                (*temp)[machine_index].increaseState();
+            }
+            else {
+                (*temp)[machine_index].decreaseState();
+            }
+            record.updateHistory(taken, this->history_size);
+        }
+        else{
+            stats.flush_num+=taken;
+            uint32_t tag = helpers::extarctLastNBits(pc>>2, this->tag_size);
+            record.setTag(tag);
+            if (!record.isValid()){
+                record.setValid();
+                if(!this->ghr_ptr){
+                    record.setHistoryPtr(new uint32_t(0));
+                }
+                if(!this->global_fsm_table_ptr){
+                    record.setStateMachineTablePtr(new StateMachineTable((unsigned)pow(2,(double)history_size), BimodialStateMachine((BimodialState)fsm_default_state)));
+                }
+                uint32_t machine_index = *(record.getHistoryPtr()) ^ getMask(pc);
+                StateMachineTablePtr temp = (record.getStateMachineTablePtr());
+                if(taken){
+                    (*temp)[machine_index].increaseState();
+                }
+                else {
+                    (*temp)[machine_index].decreaseState();
+                }
+                record.updateHistory(taken, this->history_size);
 
+            }
+            else{
+                if(!this->ghr_ptr){
+                    *record.getHistoryPtr()= 0;
+                }
+                if(!this->global_fsm_table_ptr){
+                    delete record.getStateMachineTablePtr();
+                    record.setStateMachineTablePtr(new StateMachineTable((unsigned)pow(2,(double)history_size), BimodialStateMachine((BimodialState)fsm_default_state)));
+                }
+                uint32_t machine_index = *(record.getHistoryPtr()) ^ getMask(pc);
+                StateMachineTablePtr temp = (record.getStateMachineTablePtr());
+                if(taken){
+                    (*temp)[machine_index].increaseState();
+                }
+                else {
+                    (*temp)[machine_index].decreaseState();
+                }
+                record.updateHistory(taken, this->history_size);
+            }
+        }
+    }
 
+    Statistics getStatistics(){
+        return this->stats;
+    }
 
 };
 
@@ -311,15 +371,14 @@ int BP_init(unsigned btbSize, unsigned historySize, unsigned tagSize, unsigned f
 }
 
 bool BP_predict(uint32_t pc, uint32_t *dst) {
-    bool temp = predictor->branchExists(pc);
-    return false;
+    return predictor->predict(pc, dst);
 }
 
 void BP_update(uint32_t pc, uint32_t targetPc, bool taken, uint32_t pred_dst) {
-    return;
+    predictor->update(pc, targetPc, taken, pred_dst);
 }
 
 void BP_GetStats(SIM_stats *curStats) {
-    return;
+    *curStats=predictor->getStatistics();
 }
 
