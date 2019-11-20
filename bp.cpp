@@ -233,6 +233,65 @@ private:
 
         }
     }
+    BimodialStateMachine& getMachineByPC(uint32_t pc){
+        assert(branchExists(pc));
+        uint32_t index = getIndexByPC(pc);
+        BBMRecord& record = records[index];
+        StateMachineTablePtr temp = (record.getStateMachineTablePtr());
+        uint32_t machine_index = *(record.getHistoryPtr()) ^ getMask(pc);
+        return (*temp)[machine_index];
+    }
+
+    void insertBranchToEmptyLine(uint32_t pc, uint32_t targetPc){
+        assert(!branchExists(pc));
+
+        // Get BTB line
+        uint32_t index = getIndexByPC(pc);
+        BBMRecord& record = records[index];
+
+        assert(!record.isValid());
+        record.setValid();
+
+        // Set tag
+        uint32_t tag = helpers::extarctLastNBits(pc>>2, this->tag_size);
+        record.setTag(tag);
+
+        record.setTarget(targetPc);
+
+        // Set history register
+        (!this->ghr_ptr) ? record.setHistoryPtr(new uint32_t(0)) : record.setHistoryPtr(this->ghr_ptr);
+
+        // Set state machine table
+        if(!this->global_fsm_table_ptr){
+            record.setStateMachineTablePtr(new StateMachineTable((unsigned)pow(2,(double)history_size), BimodialStateMachine((BimodialState)fsm_default_state)));
+        }
+        else{
+            record.setStateMachineTablePtr(this->global_fsm_table_ptr);
+        }
+    }
+
+    void insertBranchToExistingLine(uint32_t pc, uint32_t targetPc){
+        assert(!branchExists(pc));
+
+        // Get BTB line
+        uint32_t index = getIndexByPC(pc);
+        BBMRecord& record = records[index];
+        assert(record.isValid());
+
+        // Set branch tag in BTB
+        uint32_t tag = helpers::extarctLastNBits(pc>>2, this->tag_size);
+        record.setTag(tag);
+
+        record.setTarget(targetPc);
+
+        if(!this->ghr_ptr){
+            *record.getHistoryPtr()= 0;
+        }
+        if(!this->global_fsm_table_ptr){
+            delete record.getStateMachineTablePtr();
+            record.setStateMachineTablePtr(new StateMachineTable((unsigned)pow(2,(double)history_size), BimodialStateMachine((BimodialState)fsm_default_state)));
+        }
+    }
 
 public:
     BimodialBranchPredictor(unsigned btbSize, unsigned historySize, unsigned tagSize, unsigned fsmState,
@@ -293,64 +352,31 @@ public:
         this->stats.br_num++;
         uint32_t index = getIndexByPC(pc);
         BBMRecord& record = records[index];
-        record.setTarget(targetPc);
         if(branchExists(pc)){
-            StateMachineTablePtr temp = (record.getStateMachineTablePtr());
-            uint32_t machine_index = *(record.getHistoryPtr()) ^ getMask(pc);
-            stats.flush_num += ((taken != (*temp)[machine_index].getState() > 1) || (taken && (targetPc != pred_dst)));
-            if(taken){
-                (*temp)[machine_index].increaseState();
-            }
-            else {
-                (*temp)[machine_index].decreaseState();
-            }
+            // Branch exists in the BTB
+            record.setTarget(targetPc);
+            BimodialStateMachine& machine = getMachineByPC(pc);
+            stats.flush_num += ((taken != (machine.getState() > 1) || (taken && (targetPc != pred_dst))));
+            taken ? machine.increaseState() : machine.decreaseState();
             record.updateHistory(taken, this->history_size);
         }
         else{
-            stats.flush_num+=taken;
-            uint32_t tag = helpers::extarctLastNBits(pc>>2, this->tag_size);
-            record.setTag(tag);
+            // Branch does not exist in the BTB
+            stats.flush_num += taken;
             if (!record.isValid()){
-                record.setValid();
-                if(!this->ghr_ptr){
-                    record.setHistoryPtr(new uint32_t(0));
-                }
-                else{
-                    record.setHistoryPtr(this->ghr_ptr);
-                }
-                if(!this->global_fsm_table_ptr){
-                    record.setStateMachineTablePtr(new StateMachineTable((unsigned)pow(2,(double)history_size), BimodialStateMachine((BimodialState)fsm_default_state)));
-                }
-                else{
-                    record.setStateMachineTablePtr(this->global_fsm_table_ptr);
-                }
-                uint32_t machine_index = *(record.getHistoryPtr()) ^ getMask(pc);
-                StateMachineTablePtr temp = (record.getStateMachineTablePtr());
-                if(taken){
-                    (*temp)[machine_index].increaseState();
-                }
-                else {
-                    (*temp)[machine_index].decreaseState();
-                }
-                record.updateHistory(taken, this->history_size);
+                this->insertBranchToEmptyLine(pc, targetPc);
 
+                // Update machine state
+                BimodialStateMachine& machine = getMachineByPC(pc);
+                taken ? machine.increaseState() : machine.decreaseState();
+
+                // Update history
+                record.updateHistory(taken, this->history_size);
             }
             else{
-                if(!this->ghr_ptr){
-                    *record.getHistoryPtr()= 0;
-                }
-                if(!this->global_fsm_table_ptr){
-                    delete record.getStateMachineTablePtr();
-                    record.setStateMachineTablePtr(new StateMachineTable((unsigned)pow(2,(double)history_size), BimodialStateMachine((BimodialState)fsm_default_state)));
-                }
-                uint32_t machine_index = *(record.getHistoryPtr()) ^ getMask(pc);
-                StateMachineTablePtr temp = (record.getStateMachineTablePtr());
-                if(taken){
-                    (*temp)[machine_index].increaseState();
-                }
-                else {
-                    (*temp)[machine_index].decreaseState();
-                }
+                this->insertBranchToExistingLine(pc, targetPc);
+                BimodialStateMachine machine = this->getMachineByPC(pc);
+                taken ? machine.increaseState() : machine.decreaseState();
                 record.updateHistory(taken, this->history_size);
             }
         }
