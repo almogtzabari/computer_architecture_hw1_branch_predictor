@@ -315,8 +315,14 @@ public:
                 if(!this->ghr_ptr){
                     record.setHistoryPtr(new uint32_t(0));
                 }
+                else{
+                    record.setHistoryPtr(this->ghr_ptr);
+                }
                 if(!this->global_fsm_table_ptr){
                     record.setStateMachineTablePtr(new StateMachineTable((unsigned)pow(2,(double)history_size), BimodialStateMachine((BimodialState)fsm_default_state)));
+                }
+                else{
+                    record.setStateMachineTablePtr(this->global_fsm_table_ptr);
                 }
                 uint32_t machine_index = *(record.getHistoryPtr()) ^ getMask(pc);
                 StateMachineTablePtr temp = (record.getStateMachineTablePtr());
