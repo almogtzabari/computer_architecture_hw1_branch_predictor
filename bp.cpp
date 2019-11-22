@@ -116,7 +116,7 @@ class BimodialBranchPredictor {
             return this->valid && tag == this->tag;
         }
 
-        void setTarget(int target) {
+        void setTarget(uint32_t target) {
             this->target = target;
         }
 
@@ -131,7 +131,7 @@ class BimodialBranchPredictor {
         }
 
         void setValid(){
-            this->valid=true;
+            this->valid = true;
         }
 
         StateMachineTablePtr getStateMachineTablePtr(){
@@ -139,7 +139,7 @@ class BimodialBranchPredictor {
         }
 
         void setStateMachineTablePtr(StateMachineTablePtr table){
-            this->machine_table_ptr=table;
+            this->machine_table_ptr = table;
         }
 
         uint32_t* getHistoryPtr(){
@@ -147,7 +147,7 @@ class BimodialBranchPredictor {
         }
 
         void setHistoryPtr(uint32_t* ptr){
-            this->history=ptr;
+            this->history = ptr;
         }
 
         uint32_t getTarget(){
@@ -155,7 +155,7 @@ class BimodialBranchPredictor {
         }
 
         void setTag(uint32_t tag){
-            this->tag=tag;
+            this->tag = tag;
         }
 
     };
@@ -354,7 +354,13 @@ public:
             // Branch exists in the BTB
             record.setTarget(targetPc);
             BimodialStateMachine& machine = getMachineByPC(pc);
-            stats.flush_num += ((taken != (machine.getState() > 1) || (taken && (targetPc != pred_dst))));
+
+            // If a (branch was not taken) AND (we said it was taken, but the target was pc + 4 (which basically means
+            // "not taken", we should not flush))
+            bool should_skip_flush = (!taken && (machine.getState() > 1 && pred_dst == pc + 4));
+            if(!should_skip_flush){
+                stats.flush_num += ((taken != (machine.getState() > 1) || (taken && (targetPc != pred_dst))));
+            }
             taken ? machine.increaseState() : machine.decreaseState();
             record.updateHistory(taken, this->history_size);
         }
