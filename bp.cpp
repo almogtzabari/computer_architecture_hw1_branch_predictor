@@ -19,7 +19,7 @@ namespace helpers {
 
     uint32_t extarctLastNBits(uint32_t num, uint32_t n) {
         int mask = 0;
-        for (int i = 0; i < n; i++) {
+        for (uint32_t i = 0; i < n; i++) {
             mask +=(int)pow(2, i);
         }
         return num & mask;
@@ -112,7 +112,7 @@ class BimodialBranchPredictor {
     public:
         BBMRecord() : valid(false) {}
 
-        bool compareTag(int tag) {
+        bool compareTag(uint32_t tag) {
             return this->valid && tag == this->tag;
         }
 
@@ -338,10 +338,8 @@ public:
 
         uint32_t index = getIndexByPC(pc);
         BBMRecord& record = records[index];
-        uint32_t machine_index = *(record.getHistoryPtr()) ^ getMask(pc);
-        StateMachineTablePtr temp = (record.getStateMachineTablePtr());
-        StateMachineTable temp2 = *temp;
-        bool prediction = (temp2[machine_index].getState() > 1);
+        BimodialStateMachine& machine = getMachineByPC(pc);
+        bool prediction = machine.getState() > 1;
         if(prediction){
             *dst = record.getTarget();
         }
@@ -375,7 +373,7 @@ public:
             }
             else{
                 this->insertBranchToExistingLine(pc, targetPc);
-                BimodialStateMachine machine = this->getMachineByPC(pc);
+                BimodialStateMachine& machine = this->getMachineByPC(pc);
                 taken ? machine.increaseState() : machine.decreaseState();
                 record.updateHistory(taken, this->history_size);
             }
