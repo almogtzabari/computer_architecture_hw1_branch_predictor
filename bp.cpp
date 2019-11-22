@@ -7,6 +7,7 @@
 #include "stdlib.h"
 #include "math.h"
 #define TARGET_SIZE 30
+
 namespace helpers {
     int log(int num) {
         int ret_val = 0;
@@ -27,23 +28,24 @@ namespace helpers {
 }
 
 class BimodialStateMachine;
-
-typedef enum bimodial_state {
-    STRONGLY_NOT_TAKEN = 0,
-    WEAKLY_NOT_TAKEN = 1,
-    WEAKLY_TAKEN = 2,
-    STRONGLY_TAKEN = 3
-} BimodialState;
-
 typedef std::vector<BimodialStateMachine> StateMachineTable;
 typedef StateMachineTable* StateMachineTablePtr;
 typedef SIM_stats Statistics;
 
-class BimodialStateMachine {
-private:
-    BimodialState state;
 
+/**
+ * Class representing the state machine.
+ */
+class BimodialStateMachine {
 public:
+
+    typedef enum bimodial_state {
+        STRONGLY_NOT_TAKEN = 0,
+        WEAKLY_NOT_TAKEN = 1,
+        WEAKLY_TAKEN = 2,
+        STRONGLY_TAKEN = 3
+    } BimodialState;
+
     /**
      * Constructor
      * @param default_state - Default state to initialize the machine with.
@@ -96,11 +98,20 @@ public:
     BimodialState getState() {
         return state;
     }
+
+private:
+    BimodialState state;
 };
 
+/**
+ * Class representing the branch predictor.
+ */
 class BimodialBranchPredictor {
 
-    class BBMRecord {
+    /***
+     * Class representing BTB record.
+     */
+    class BBPRecord {
     private:
         bool valid;
         uint32_t tag;
@@ -110,50 +121,93 @@ class BimodialBranchPredictor {
 
 
     public:
-        BBMRecord() : valid(false) {}
+        /**
+         * Default constructor.
+         */
+        BBPRecord() : valid(false) {}
 
+        /**
+         * @param tag - tag to compare with.
+         * @return True if the record has the same tag as @param tag, false otherwise.
+         */
         bool compareTag(uint32_t tag) {
             return this->valid && tag == this->tag;
         }
 
+        /**
+         * Set record's target.
+         * @param target - target to set.
+         */
         void setTarget(uint32_t target) {
             this->target = target;
         }
 
+        /**
+         * Update record's history.
+         * @param correct_prediction - history to add.
+         * @param n_bits - history size in bits.
+         */
         void updateHistory (bool correct_prediction, uint32_t n_bits) {
             *history = *history<<1;
             *history+=correct_prediction;
             *history=helpers::extarctLastNBits(*history, n_bits);
         }
 
+        /**
+         * @return True if the record is valid, meaning the record is being used by a branch.
+         */
         bool isValid(){
             return this->valid;
         }
 
+        /**
+         * Set record's valid bit, meaning the record is now being used by a branch.
+         */
         void setValid(){
             this->valid = true;
         }
 
+        /**
+         * @return Returns the pointer to the state machine table. This pointer can be both to a local or global table.
+         */
         StateMachineTablePtr getStateMachineTablePtr(){
             return machine_table_ptr;
         }
 
-        void setStateMachineTablePtr(StateMachineTablePtr table){
-            this->machine_table_ptr = table;
+        /**
+         * Set record's pointer to state machine table.
+         * @param table_ptr - pointer to a new table.
+         */
+        void setStateMachineTablePtr(StateMachineTablePtr table_ptr){
+            this->machine_table_ptr = table_ptr;
         }
 
+        /**
+         * @return Pointer to history register. Register could be either global or local.
+         */
         uint32_t* getHistoryPtr(){
             return this->history;
         }
 
+        /**
+         * Set history register pointer. This function is being used when inserting a new branch to the BTB.
+         * @param ptr - pointer to set to.
+         */
         void setHistoryPtr(uint32_t* ptr){
             this->history = ptr;
         }
 
+        /**
+         * @return Record's target address.
+         */
         uint32_t getTarget(){
             return this->target;
         }
 
+        /**
+         * Set record's tag.
+         * @param tag - tag to set.
+         */
         void setTag(uint32_t tag){
             this->tag = tag;
         }
@@ -162,7 +216,7 @@ class BimodialBranchPredictor {
 
 private:
     Statistics stats;
-    std::vector <BBMRecord> records;
+    std::vector <BBPRecord> records;
     uint32_t* ghr_ptr;
     StateMachineTablePtr global_fsm_table_ptr;
     unsigned tag_size;
@@ -186,6 +240,12 @@ private:
         return records[index].isValid() && records[index].compareTag(tag);
     }
 
+    /**
+     * This function is being used in sharing (G-Share, L-Share) cases. It creates a mask using a pc - extarcting
+     * relevant bits from pc according to sharing policy. This mask will then be used in a XOR operation with record's history.
+     * @param pc - pc of a branch.
+     * @return Mask that is being used to determine which state machine to use.
+     */
     uint32_t getMask(uint32_t pc){
         if (!this->global_fsm_table_ptr){
             return 0;
@@ -197,6 +257,10 @@ private:
         }
     }
 
+    /**
+     * @param pc - branch's pc.
+     * @return Index in BTB that the branch can be mapped to ('set' in direct mapping).
+     */
     uint32_t getIndexByPC(uint32_t pc){
         // Calculate how many bits need to be extracted from pc
         uint32_t btb_bits_size = helpers::log(records.size());
@@ -209,6 +273,9 @@ private:
 
     }
 
+    /**
+     * Compute theoretical memory size in bits.
+     */
     void computeMemorySize(){
         unsigned btb_size=records.size();
         if(!global_fsm_table_ptr){
@@ -233,21 +300,31 @@ private:
 
         }
     }
+
+    /**
+     * @param pc - branch's pc.
+     * @return Relevant state machine of a branch according to branch's history (and sharing policy).
+     */
     BimodialStateMachine& getMachineByPC(uint32_t pc){
         assert(branchExists(pc));
         uint32_t index = getIndexByPC(pc);
-        BBMRecord& record = records[index];
+        BBPRecord& record = records[index];
         StateMachineTablePtr temp = (record.getStateMachineTablePtr());
         uint32_t machine_index = *(record.getHistoryPtr()) ^ getMask(pc);
         return (*temp)[machine_index];
     }
 
+    /**
+     * Inserts a branch into the BTB in an empty record (i.e invalid).
+     * @param pc - branch's pc to inser to the BTB.
+     * @param targetPc - branch target address.
+     */
     void insertBranchToEmptyLine(uint32_t pc, uint32_t targetPc){
         assert(!branchExists(pc));
 
         // Get BTB line
         uint32_t index = getIndexByPC(pc);
-        BBMRecord& record = records[index];
+        BBPRecord& record = records[index];
 
         assert(!record.isValid());
         record.setValid();
@@ -263,19 +340,24 @@ private:
 
         // Set state machine table
         if(!this->global_fsm_table_ptr){
-            record.setStateMachineTablePtr(new StateMachineTable((unsigned)pow(2,(double)history_size), BimodialStateMachine((BimodialState)fsm_default_state)));
+            record.setStateMachineTablePtr(new StateMachineTable((unsigned)pow(2,(double)history_size), BimodialStateMachine((BimodialStateMachine::BimodialState)fsm_default_state)));
         }
         else{
             record.setStateMachineTablePtr(this->global_fsm_table_ptr);
         }
     }
 
+    /**
+     * Inserts a branch into the BTB instead of an existing branch.
+     * @param pc - new branch's pc.
+     * @param targetPc - new branch's target address.
+     */
     void insertBranchToExistingLine(uint32_t pc, uint32_t targetPc){
         assert(!branchExists(pc));
 
         // Get BTB line
         uint32_t index = getIndexByPC(pc);
-        BBMRecord& record = records[index];
+        BBPRecord& record = records[index];
         assert(record.isValid());
 
         // Set branch tag in BTB
@@ -289,14 +371,24 @@ private:
         }
         if(!this->global_fsm_table_ptr){
             delete record.getStateMachineTablePtr();
-            record.setStateMachineTablePtr(new StateMachineTable((unsigned)pow(2,(double)history_size), BimodialStateMachine((BimodialState)fsm_default_state)));
+            record.setStateMachineTablePtr(new StateMachineTable((unsigned)pow(2,(double)history_size), BimodialStateMachine((BimodialStateMachine::BimodialState)fsm_default_state)));
         }
     }
 
 public:
+    /**
+     * Constructor. Will be called from BP_INIT.
+     * @param btbSize - number of records in btb.
+     * @param historySize - number of bits in history register.
+     * @param tagSize - number of bits in tag (in each BTB record).
+     * @param fsmState - default state to initalize the state machines.
+     * @param isGlobalHist - if true, global history register will be used.
+     * @param isGlobalTable - if true, global state machine table will be used.
+     * @param Shared - sharing policy (G-Share, L-Share, etc..).
+     */
     BimodialBranchPredictor(unsigned btbSize, unsigned historySize, unsigned tagSize, unsigned fsmState,
                             bool isGlobalHist, bool isGlobalTable, int Shared) : stats(Statistics{0, 0, 0}),
-                                                                                 records(std::vector<BBMRecord>(
+                                                                                 records(std::vector<BBPRecord>(
                                                                                          btbSize)),
                                                                                  ghr_ptr(nullptr), global_fsm_table_ptr(nullptr),
                                                                                  tag_size(tagSize),
@@ -305,14 +397,17 @@ public:
             this->ghr_ptr = new uint32_t(0);
         }
         if(isGlobalTable){
-            this->global_fsm_table_ptr = new StateMachineTable(pow(2,historySize), BimodialStateMachine(BimodialState((fsmState))));
+            this->global_fsm_table_ptr = new StateMachineTable(pow(2,historySize), BimodialStateMachine(BimodialStateMachine::BimodialState((fsmState))));
             shared = Shared;
         }
         this->computeMemorySize();
     }
 
+    /**
+     * Destructor.
+     */
     ~BimodialBranchPredictor() {
-        for(BBMRecord& record: this->records){
+        for(BBPRecord& record: this->records){
             if(record.isValid()){
                 if(!ghr_ptr) {
                     delete record.getHistoryPtr();
@@ -330,6 +425,13 @@ public:
         }
     }
 
+    /**
+     * Predicts branch's behaviour.
+     * @param pc - branch's pc.
+     * @param dst - pointer to location to write the target address predicted by the predictor.
+     * @return True if the branch is taken, false otherwise. Target address will also be written to dst. In case the
+     * branch is taken dst will have the target address, else pc + 4.
+     */
     bool predict(uint32_t pc, uint32_t *dst){
         *dst = pc + 4;
         if(!branchExists(pc)){
@@ -337,7 +439,7 @@ public:
         }
 
         uint32_t index = getIndexByPC(pc);
-        BBMRecord& record = records[index];
+        BBPRecord& record = records[index];
         BimodialStateMachine& machine = getMachineByPC(pc);
         bool prediction = machine.getState() > 1;
         if(prediction){
@@ -346,10 +448,17 @@ public:
         return prediction;
     }
 
+    /**
+     * Update branch's actual behaviour in the predictor.
+     * @param pc - branch's pc.
+     * @param targetPc - actual target address (in case branch was taken).
+     * @param taken - true if the branch was taken, false otherwise.
+     * @param pred_dst - target address predicted by the predictor.
+     */
     void update(uint32_t pc, uint32_t targetPc, bool taken, uint32_t pred_dst){
         this->stats.br_num++;
         uint32_t index = getIndexByPC(pc);
-        BBMRecord& record = records[index];
+        BBPRecord& record = records[index];
         if(branchExists(pc)){
             // Branch exists in the BTB
             record.setTarget(targetPc);
@@ -386,6 +495,9 @@ public:
         }
     }
 
+    /**
+     * @return Statistics about the predictor.
+     */
     Statistics getStatistics(){
         return this->stats;
     }
